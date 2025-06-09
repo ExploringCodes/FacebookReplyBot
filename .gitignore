@@ -1,0 +1,38 @@
+# React frontend (inside frontend/replybot)
+frontend/replybot/node_modules/
+frontend/replybot/build/
+frontend/replybot/.env
+frontend/replybot/.env.local
+frontend/replybot/.env.*.local
+frontend/replybot/npm-debug.log*
+frontend/replybot/yarn-debug.log*
+frontend/replybot/yarn-error.log*
+
+# FastAPI backend (in backend/)
+backend/__pycache__/
+backend/.mypy_cache/
+backend/.pytest_cache/
+backend/*.py[cod]
+backend/*.log
+backend/.env
+backend/venv/
+backend/instance/
+backend/*.sqlite3
+backend/*.db
+
+# Common Python ignores
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.env
+*.venv/
+
+# System and editor files
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Git-specific
+*.orig
+*.swp
+*.swo
