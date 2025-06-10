@@ -32,7 +32,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+#
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
