@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 // Define API_BASE_URL here (same as in api.js)
 //const API_BASE_URL = "https://replybot-kscs.onrender.com";
-const API_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_URL = "https://facebookreplybot.onrender.com"
+//const API_BASE_URL = "http://127.0.0.1:8000";
 
 function App() {
     const [pageId, setPageId] = useState("");
