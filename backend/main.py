@@ -18,6 +18,15 @@ from google.oauth2 import service_account
 import json
 import tempfile
 from dotenv import load_dotenv
+import pytz
+
+
+# Add these new imports instead
+import threading
+from datetime import datetime, timedelta
+import time
+
+
 
 app = FastAPI(title="Facebook Comment Reply Bot with Scheduler")
 
@@ -55,6 +64,13 @@ additional_instructions = ""
 
 blacklisted_users = []  # Store blacklisted user names and IDs
 
+# Add these new global variables instead
+active_jobs = {}  # Store recurring job info
+stop_flags = {}   # Control job stopping
+
+# Update your request model
+
+
 class BlacklistUser(BaseModel):
     user_id: Optional[str] = None
     user_name: Optional[str] = None
@@ -85,6 +101,7 @@ class AdditionalPromptConfig(BaseModel):
 
 class HeartbeatRequest(BaseModel):
     timestamp: str
+    
 
 def get_sheets_client(credentials_dict, temp_file=None):
     try:
@@ -475,13 +492,60 @@ def get_replier_names(full_comment_id, access_token):
         print(f"Error fetching replies: {response.status_code} - {response.json()}")
         return 'error'
 
-def process_comments(config: FacebookConfig, sheet_id: str, credentials_dict: dict, sheet_name: str, stop_time_after: Optional[int] = None):
+
+
+
+# Update your request model
+class AIReplyRequest(BaseModel):
+    config: FacebookConfig
+    google_sheet_id: str
+    google_credentials: GoogleCredentials
+    start_time: str  # Time in HH:MM format (24-hour)
+    duration_seconds: int  # How long to run each day
+
+# Helper function to get next occurrence of time in Dhaka timezone
+def get_next_dhaka_time(time_str: str):
+    """
+    Convert time string (HH:MM) to next occurrence in Dhaka timezone
+    Returns datetime object in Dhaka timezone
+    """
+    dhaka_tz = pytz.timezone('Asia/Dhaka')
+    
+    # Parse the time string
+    try:
+        hour, minute = map(int, time_str.split(':'))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError("Invalid time format")
+    except:
+        raise ValueError("Time must be in HH:MM format (24-hour)")
+    
+    # Get current time in Dhaka
+    now_dhaka = datetime.now(dhaka_tz)
+    
+    # Create target time for today
+    target_today = now_dhaka.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    
+    # If target time has passed today, schedule for tomorrow
+    if target_today <= now_dhaka:
+        target_today += timedelta(days=1)
+    
+    return target_today
+
+def calculate_seconds_until_dhaka_time(target_time_dhaka):
+    """Calculate seconds from now until target time in Dhaka"""
+    dhaka_tz = pytz.timezone('Asia/Dhaka')
+    now_dhaka = datetime.now(dhaka_tz)
+    
+    time_diff = target_time_dhaka - now_dhaka
+    return int(time_diff.total_seconds())
+
+# Updated process_comments function (same as before but with duration_seconds)
+def process_comments(config: FacebookConfig, sheet_id: str, credentials_dict: dict, sheet_name: str, duration_seconds: Optional[int] = None):
     global is_running, blacklisted_users
     ###
     replied_comments = set()
     
     try:
-
         is_running = True
         # Set a local job_start_time for this execution only
         local_job_start_time = datetime.now()
@@ -495,14 +559,15 @@ def process_comments(config: FacebookConfig, sheet_id: str, credentials_dict: di
 
         for post in posts:
             # Check if we should stop based on the time elapsed for this execution
-
             post_time = post.get('created_time', '')
             if post_time < cutoff_date:
                 logger.info(f"Skipping post {post['id']} as it's before March 2025")
                 continue
-            if stop_time_after and datetime.now() >= local_job_start_time + timedelta(seconds=stop_time_after):
-                print('time has elapsed ')
-                logger.info(f"Stopping this job execution due to stop_time_after ({stop_time_after} seconds)")
+                
+            # Check duration
+            if duration_seconds and datetime.now() >= local_job_start_time + timedelta(seconds=duration_seconds):
+                print('Duration time has elapsed')
+                logger.info(f"Stopping this job execution due to duration_seconds ({duration_seconds} seconds)")
                 return
                 
             if not is_running:
@@ -521,11 +586,9 @@ def process_comments(config: FacebookConfig, sheet_id: str, credentials_dict: di
             comments.sort(key=lambda x: x.get('created_time', ''), reverse=True)
 
             for comment in comments:
-
-
-                # Check if we should stop based on the time elapsed for this execution
-                if stop_time_after and datetime.now() >= local_job_start_time + timedelta(seconds=stop_time_after):
-                    logger.info(f"Stopping this job execution due to stop_time_after ({stop_time_after} seconds)")
+                # Check duration again
+                if duration_seconds and datetime.now() >= local_job_start_time + timedelta(seconds=duration_seconds):
+                    logger.info(f"Stopping this job execution due to duration_seconds ({duration_seconds} seconds)")
                     return
                     
                 if not is_running:
@@ -565,7 +628,6 @@ def process_comments(config: FacebookConfig, sheet_id: str, credentials_dict: di
                 time.sleep(2)
 
                 if page_name in replier_names or replier_names == 'error':
-
                     replied_comments.add(raw_comment_id)   ###
                     continue
                 
@@ -579,27 +641,9 @@ def process_comments(config: FacebookConfig, sheet_id: str, credentials_dict: di
                 )
                 if is_offensive:
                     logger.info(f"Skipping reply to offensive comment by {commenter_name}: {comment_message[:50]}...")
-                    
-                    # try: 
-                       
-                    #     store_data_in_sheet({
-                    #         "Post ID": post_id,
-                    #         "Post Content": post_message,
-                    #         "Post URL": post_permalink_url,
-                    #         "Post Time": post_time,
-                    #         "Comment ID": full_comment_id,
-                    #         "Comment Content": comment_message,
-                    #         "Comment URL": comment_permalink_url,
-                    #         "Comment Time": comment_time,
-                    #         "Commenter Name": commenter_name,
-                    #         "Reply": reply_text,
-                    #     }, sheet_id, credentials_dict, sheet_name)
-                    # except Exception as e:
-                    #     logger.error(f"Failed to  store data: {e}")
-
                     continue
+                    
                 if reply_text:
-                  #  time.sleep(2)
                     try: 
                         post_facebook_reply(config.access_token, full_comment_id, reply_text)
                         replied_comments.add(raw_comment_id)
@@ -621,79 +665,148 @@ def process_comments(config: FacebookConfig, sheet_id: str, credentials_dict: di
     except Exception as e:
         logger.error(f"Error in scheduled task: {e}")
     finally:
-        # We don't set is_running to False here to allow the job to be executed again at the next interval
-        # We only set it to False when manually stopping the scheduler
         pass
 
-@app.post("/start-scheduler")
-def start_scheduler(request: AIReplyRequest):
+def daily_job_runner(job_id: str, config, google_sheet_id: str, credentials_dict: dict, sheet_name: str, start_time: str, duration_seconds: int):
+    """
+    Runs the daily recurring job
+    """
+    dhaka_tz = pytz.timezone('Asia/Dhaka')
+    
+    while job_id in active_jobs and not stop_flags.get(job_id, False):
+        try:
+            # Calculate next occurrence
+            next_run_time = get_next_dhaka_time(start_time)
+            seconds_to_wait = calculate_seconds_until_dhaka_time(next_run_time)
+            
+            logger.info(f"Job {job_id}: Next run scheduled for {next_run_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            logger.info(f"Job {job_id}: Waiting {seconds_to_wait} seconds until next run")
+            
+            # Wait until it's time to run (check every minute for stop signal)
+            start_wait = time.time()
+            while time.time() - start_wait < seconds_to_wait:
+                if stop_flags.get(job_id, False):
+                    logger.info(f"Job {job_id}: Stopped during wait period")
+                    return
+                time.sleep(60)  # Check every minute
+            
+            # Check again if job should stop
+            if stop_flags.get(job_id, False):
+                logger.info(f"Job {job_id}: Stopped before execution")
+                return
+                
+            # Run the job
+            current_dhaka_time = datetime.now(dhaka_tz)
+            logger.info(f"Job {job_id}: Starting execution at {current_dhaka_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            
+            process_comments(config, google_sheet_id, credentials_dict, sheet_name, duration_seconds)
+            
+            logger.info(f"Job {job_id}: Completed execution")
+            
+        except Exception as e:
+            logger.error(f"Error in daily job {job_id}: {e}")
+            # Wait a bit before retrying
+            time.sleep(300)  # Wait 5 minutes before retry
+    
+    # Cleanup when job stops
+    if job_id in active_jobs:
+        del active_jobs[job_id]
+    if job_id in stop_flags:
+        del stop_flags[job_id]
+    logger.info(f"Job {job_id}: Terminated")
 
-
-
-    global current_job, is_running
-
-    if current_job:
-        scheduler.remove_job("fetch_and_reply")
-        
-    # Reset the running flag to allow new executions
-    is_running = True
-    stop_time_after = request.stop_time_after
-
-    current_job = scheduler.add_job(
-        process_comments,
-        IntervalTrigger(seconds=request.interval_seconds),
-        id="fetch_and_reply",
-        args=[
-            request.config, 
-            request.google_sheet_id, 
-            request.google_credentials.credentials, 
+@app.post("/start-daily-reply")
+def start_daily_reply(request: AIReplyRequest):
+    global active_jobs, stop_flags
+    
+    # Validate time format
+    try:
+        get_next_dhaka_time(request.start_time)
+    except ValueError as e:
+        return {"error": f"Invalid time format: {str(e)}"}
+    
+    # Generate a unique job ID
+    job_id = f"daily_{int(time.time())}"
+    
+    # Create stop flag for this job
+    stop_flags[job_id] = False
+    
+    # Store job info
+    active_jobs[job_id] = {
+        "start_time": request.start_time,
+        "duration_seconds": request.duration_seconds,
+        "created_at": datetime.now().isoformat(),
+        "config": request.config,
+        "google_sheet_id": request.google_sheet_id,
+        "sheet_name": request.google_credentials.sheet_name
+    }
+    
+    # Start the daily job thread
+    thread = threading.Thread(
+        target=daily_job_runner,
+        args=(
+            job_id,
+            request.config,
+            request.google_sheet_id,
+            request.google_credentials.credentials,
             request.google_credentials.sheet_name,
-            stop_time_after
-        ],
-        replace_existing=True,
-        max_instances=1
+            request.start_time,
+            request.duration_seconds
+        )
     )
-
-    # Trigger first run immediately
-    process_comments(
-        request.config,
-        request.google_sheet_id,
-        request.google_credentials.credentials,
-        request.google_credentials.sheet_name,
-        stop_time_after
-    )
-
-    if not scheduler.running:
-        print('scheduler isnt running bro')
-        scheduler.start()
-
+    thread.daemon = True
+    thread.start()
+    
+    # Calculate next run info for response
+    next_run_time = get_next_dhaka_time(request.start_time)
+    
     return {
-        "status": "Scheduler started. Each execution will run" + 
-                 (f" for up to {stop_time_after} seconds" if stop_time_after else " until completion") +
-                 f" and repeat every {request.interval_seconds} seconds.",
-        "interval_seconds": request.interval_seconds,
-        "stop_time_after_seconds": stop_time_after,
+        "status": f"Daily reply bot scheduled for {request.start_time} Dhaka time, running for {request.duration_seconds} seconds each day",
+        "job_id": job_id,
+        "start_time": request.start_time,
+        "duration_seconds": request.duration_seconds,
+        "next_run_dhaka": next_run_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
         "sheet_link": f"https://docs.google.com/spreadsheets/d/{request.google_sheet_id}/edit",
         "sheet_name": request.google_credentials.sheet_name
     }
 
-@app.post("/stop-scheduler")
-def stop_scheduler():
-
+@app.post("/stop-daily-reply")
+def stop_daily_reply(job_id: str = None):
+    global active_jobs, stop_flags, is_running
     
-    global is_running, current_job
-
-    if current_job:
+    if job_id:
+        # Stop specific job
+        if job_id in active_jobs:
+            stop_flags[job_id] = True
+            is_running = False
+            return {"status": f"Daily job {job_id} stopped"}
+        else:
+            return {"status": "Job not found"}
+    else:
+        # Stop all jobs
+        for jid in list(active_jobs.keys()):
+            stop_flags[jid] = True
         is_running = False
-        scheduler.remove_job("fetch_and_reply")
-        current_job = None
-        return {"status": "Scheduler stopped manually."}
-    return {"status": "No active scheduler to stop."}
+        return {"status": "All daily jobs stopped"}
 
-
-
-
-
-
-
-
+@app.get("/active-daily-jobs")
+def get_active_daily_jobs():
+    dhaka_tz = pytz.timezone('Asia/Dhaka')
+    current_dhaka_time = datetime.now(dhaka_tz)
+    
+    job_info = []
+    for job_id, job_data in active_jobs.items():
+        next_run = get_next_dhaka_time(job_data["start_time"])
+        job_info.append({
+            "job_id": job_id,
+            "start_time": job_data["start_time"],
+            "duration_seconds": job_data["duration_seconds"],
+            "next_run_dhaka": next_run.strftime('%Y-%m-%d %H:%M:%S %Z'),
+            "created_at": job_data["created_at"]
+        })
+    
+    return {
+        "active_jobs": job_info,
+        "count": len(job_info),
+        "current_dhaka_time": current_dhaka_time.strftime('%Y-%m-%d %H:%M:%S %Z')
+    }

@@ -1,9 +1,4 @@
-
-
-
 import React, { useState, useEffect, useRef } from "react";
-import { startScheduler, stopScheduler } from "./api";
-import { getBlacklistedUsers, addBlacklistedUsers, removeBlacklistedUsers, clearBlacklist } from "./api";
 // Define API_BASE_URL here (same as in api.js)
 //const API_BASE_URL = "https://replybot-kscs.onrender.com";
 const API_BASE_URL = "http://127.0.0.1:8000";
@@ -11,8 +6,11 @@ const API_BASE_URL = "http://127.0.0.1:8000";
 function App() {
     const [pageId, setPageId] = useState("");
     const [accessToken, setAccessToken] = useState("");
-    const [intervalSeconds, setIntervalSeconds] = useState(60);
-    const [stopTimeAfter, setStopTimeAfter] = useState(""); 
+    // Replace datetime with time-only fields
+    const [startTime, setStartTime] = useState("09:00"); // Default 9:00 AM
+    const [durationSeconds, setDurationSeconds] = useState(1800); // Default 30 minutes
+    const [activeJobs, setActiveJobs] = useState([]);
+    
     const [status, setStatus] = useState("");
     const [googleSheetId, setGoogleSheetId] = useState("");
     const [sheetLink, setSheetLink] = useState("");
@@ -30,13 +28,11 @@ function App() {
     const [heartbeatLatency, setHeartbeatLatency] = useState(null);
     const [missedHeartbeats, setMissedHeartbeats] = useState(0);
     
-// Add after your other useState declarations
-const [blacklistedUsers, setBlacklistedUsers] = useState([]);
-const [blacklistUserName, setBlacklistUserName] = useState("");
-const [blacklistUserId, setBlacklistUserId] = useState("");
-const [blacklistStatus, setBlacklistStatus] = useState("");
-  
-
+    // Blacklist state
+    const [blacklistedUsers, setBlacklistedUsers] = useState([]);
+    const [blacklistUserName, setBlacklistUserName] = useState("");
+    const [blacklistUserId, setBlacklistUserId] = useState("");
+    const [blacklistStatus, setBlacklistStatus] = useState("");
 
     // Refs for intervals
     const heartbeatIntervalRef = useRef(null);
@@ -51,6 +47,12 @@ const [blacklistStatus, setBlacklistStatus] = useState("");
             if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
             if (connectionCheckRef.current) clearInterval(connectionCheckRef.current);
         };
+    }, []);
+
+    // Add useEffect to periodically check active jobs
+    useEffect(() => {
+        const interval = setInterval(fetchActiveJobs, 10000); // Check every 10 seconds
+        return () => clearInterval(interval);
     }, []);
 
     const startHeartbeatMonitoring = () => {
@@ -110,6 +112,22 @@ const [blacklistStatus, setBlacklistStatus] = useState("");
         }
     };
 
+    // Function to fetch active jobs (updated endpoint)
+    const fetchActiveJobs = async () => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/active-daily-jobs`);
+            const data = await response.json();
+            setActiveJobs(data.active_jobs || []);
+        } catch (error) {
+            console.error("Failed to fetch active jobs:", error);
+        }
+    };
+
+    // Load blacklisted users when component mounts
+    useEffect(() => {
+        handleGetBlacklistedUsers();
+    }, []);
+
     const handleStart = async () => {
         try {
             let parsedCredentials;
@@ -118,38 +136,72 @@ const [blacklistStatus, setBlacklistStatus] = useState("");
                 setCredentialsError("");
             } catch (error) {
                 setCredentialsError("Invalid JSON format for Google credentials");
-                setStatus("Failed to start scheduler: Invalid Google credentials format");
+                setStatus("Failed to start: Invalid Google credentials format");
+                return;
+            }
+
+            if (!startTime) {
+                setStatus("Please select a start time");
+                return;
+            }
+
+            // Validate time format (HH:MM)
+            const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+            if (!timeRegex.test(startTime)) {
+                setStatus("Please enter time in HH:MM format (24-hour)");
                 return;
             }
 
             const config = {
                 config: { page_id: pageId, access_token: accessToken },
-                interval_seconds: intervalSeconds,
+                start_time: startTime,
+                duration_seconds: durationSeconds,
                 google_sheet_id: googleSheetId,
                 google_credentials: {
                     credentials: parsedCredentials,
                     sheet_name: sheetName
-                },
-                stop_time_after: stopTimeAfter ? parseInt(stopTimeAfter) : null
+                }
             };
             
-            const response = await startScheduler(config);
-            setStatus(response.status);
+            const response = await fetch(`${API_BASE_URL}/start-daily-reply`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(config)
+            });
             
-            if (response.sheet_link) {
-                setSheetLink(response.sheet_link);
+            const data = await response.json();
+            
+            if (response.ok) {
+                setStatus(data.status + ` (Next run: ${data.next_run_dhaka})`);
+                
+                if (data.sheet_link) {
+                    setSheetLink(data.sheet_link);
+                }
+                
+                // Refresh active jobs
+                fetchActiveJobs();
+            } else {
+                setStatus(data.error || "Failed to start daily reply bot");
             }
         } catch (error) {
-            setStatus("Failed to start scheduler: " + (error.message || "Unknown error"));
+            setStatus("Failed to start: " + (error.message || "Unknown error"));
         }
     };
 
-    const handleStop = async () => {
+    const handleStop = async (jobId = null) => {
         try {
-            const response = await stopScheduler();
-            setStatus(response.status);
+            const url = jobId 
+                ? `${API_BASE_URL}/stop-daily-reply?job_id=${jobId}`
+                : `${API_BASE_URL}/stop-daily-reply`;
+                
+            const response = await fetch(url, { method: "POST" });
+            const data = await response.json();
+            setStatus(data.status);
+            
+            // Refresh active jobs
+            fetchActiveJobs();
         } catch (error) {
-            setStatus("Failed to stop scheduler.");
+            setStatus("Failed to stop.");
         }
     };
 
@@ -305,111 +357,104 @@ const [blacklistStatus, setBlacklistStatus] = useState("");
         }
     };
 
-// Add after your other handler functions, before the return statement
-const handleGetBlacklistedUsers = async () => {
-    try {
-        const response = await fetch(`${API_BASE_URL}/get-blacklisted-users`);
-        if (response.ok) {
-            const data = await response.json();
-            setBlacklistedUsers(data.blacklisted_users || []);
-            setBlacklistStatus("Blacklist loaded successfully");
-        } else {
-            setBlacklistStatus("Failed to load blacklisted users");
+    // Blacklist functions (unchanged)
+    const handleGetBlacklistedUsers = async () => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/get-blacklisted-users`);
+            if (response.ok) {
+                const data = await response.json();
+                setBlacklistedUsers(data.blacklisted_users || []);
+                setBlacklistStatus("Blacklist loaded successfully");
+            } else {
+                setBlacklistStatus("Failed to load blacklisted users");
+            }
+        } catch (error) {
+            setBlacklistStatus("Error loading blacklisted users");
         }
-    } catch (error) {
-        setBlacklistStatus("Error loading blacklisted users");
-    }
-};
+    };
 
-const handleAddToBlacklist = async () => {
-    if (!blacklistUserName && !blacklistUserId) {
-        setBlacklistStatus("Please enter either a user name or user ID");
-        return;
-    }
-
-    try {
-        const response = await fetch(`${API_BASE_URL}/add-blacklisted-users`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                users: [{
-                    user_name: blacklistUserName || null,
-                    user_id: blacklistUserId || null
-                }]
-            })
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            setBlacklistedUsers(data.blacklisted_users || []);
-            setBlacklistStatus("User added to blacklist successfully");
-            setBlacklistUserName("");
-            setBlacklistUserId("");
-        } else {
-            const error = await response.json();
-            setBlacklistStatus(error.detail || "Failed to add user to blacklist");
+    const handleAddToBlacklist = async () => {
+        if (!blacklistUserName && !blacklistUserId) {
+            setBlacklistStatus("Please enter either a user name or user ID");
+            return;
         }
-    } catch (error) {
-        setBlacklistStatus("Error adding user to blacklist");
-    }
-};
 
-const handleRemoveFromBlacklist = async (userName, userId) => {
-    try {
-        const response = await fetch(`${API_BASE_URL}/remove-blacklisted-users`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                users: [{
-                    user_name: userName || null,
-                    user_id: userId || null
-                }]
-            })
-        });
+        try {
+            const response = await fetch(`${API_BASE_URL}/add-blacklisted-users`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    users: [{
+                        user_name: blacklistUserName || null,
+                        user_id: blacklistUserId || null
+                    }]
+                })
+            });
 
-        if (response.ok) {
-            const data = await response.json();
-            setBlacklistedUsers(data.blacklisted_users || []);
-            setBlacklistStatus("User removed from blacklist successfully");
-        } else {
-            const error = await response.json();
-            setBlacklistStatus(error.detail || "Failed to remove user from blacklist");
+            if (response.ok) {
+                const data = await response.json();
+                setBlacklistedUsers(data.blacklisted_users || []);
+                setBlacklistStatus("User added to blacklist successfully");
+                setBlacklistUserName("");
+                setBlacklistUserId("");
+            } else {
+                const error = await response.json();
+                setBlacklistStatus(error.detail || "Failed to add user to blacklist");
+            }
+        } catch (error) {
+            setBlacklistStatus("Error adding user to blacklist");
         }
-    } catch (error) {
-        setBlacklistStatus("Error removing user from blacklist");
-    }
-};
+    };
 
-const handleClearBlacklist = async () => {
-    if (!window.confirm("Are you sure you want to clear the entire blacklist?")) {
-        return;
-    }
-    
-    try {
-        const response = await fetch(`${API_BASE_URL}/clear-blacklist`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ clear_all: true })
-        });
+    const handleRemoveFromBlacklist = async (userName, userId) => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/remove-blacklisted-users`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    users: [{
+                        user_name: userName || null,
+                        user_id: userId || null
+                    }]
+                })
+            });
 
-        if (response.ok) {
-            setBlacklistedUsers([]);
-            setBlacklistStatus("Blacklist cleared successfully");
-        } else {
-            const error = await response.json();
-            setBlacklistStatus(error.detail || "Failed to clear blacklist");
+            if (response.ok) {
+                const data = await response.json();
+                setBlacklistedUsers(data.blacklisted_users || []);
+                setBlacklistStatus("User removed from blacklist successfully");
+            } else {
+                const error = await response.json();
+                setBlacklistStatus(error.detail || "Failed to remove user from blacklist");
+            }
+        } catch (error) {
+            setBlacklistStatus("Error removing user from blacklist");
         }
-    } catch (error) {
-        setBlacklistStatus("Error clearing blacklist");
-    }
-};
+    };
 
-// Load blacklisted users when component mounts
-useEffect(() => {
-    handleGetBlacklistedUsers();
-}, []);
+    const handleClearBlacklist = async () => {
+        if (!window.confirm("Are you sure you want to clear the entire blacklist?")) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${API_BASE_URL}/clear-blacklist`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ clear_all: true })
+            });
 
-
+            if (response.ok) {
+                setBlacklistedUsers([]);
+                setBlacklistStatus("Blacklist cleared successfully");
+            } else {
+                const error = await response.json();
+                setBlacklistStatus(error.detail || "Failed to clear blacklist");
+            }
+        } catch (error) {
+            setBlacklistStatus("Error clearing blacklist");
+        }
+    };
 
     // Function to get appropriate color for connection status
     const getConnectionStatusColor = () => {
@@ -419,6 +464,38 @@ useEffect(() => {
             case "disconnected": return "red";
             default: return "gray";
         }
+    };
+
+    // Helper function to format duration for display
+    const formatDuration = (seconds) => {
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const remainingSeconds = seconds % 60;
+        
+        if (hours > 0) {
+            return `${hours}h ${minutes}m ${remainingSeconds}s`;
+        } else if (minutes > 0) {
+            return `${minutes}m ${remainingSeconds}s`;
+        } else {
+            return `${remainingSeconds}s`;
+        }
+    };
+
+    // Helper function to convert 24-hour time to 12-hour format
+    const formatTime12Hour = (time24) => {
+        const [hours, minutes] = time24.split(':');
+        const hour12 = parseInt(hours) % 12 || 12;
+        const ampm = parseInt(hours) >= 12 ? 'PM' : 'AM';
+        return `${hour12}:${minutes} ${ampm}`;
+    };
+
+    // Helper function to get current time in Dhaka for display
+    const getCurrentDhakaTime = () => {
+        // This is an approximation - actual Dhaka time would need server calculation
+        const now = new Date();
+        const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+        const dhaka = new Date(utc + (6 * 3600000)); // UTC+6
+        return dhaka.toLocaleString();
     };
 
     // Connection Status Indicator component
@@ -597,27 +674,150 @@ useEffect(() => {
                     {credentialsError && <p style={{ color: "red", margin: "5px 0 0 0" }}>{credentialsError}</p>}
                 </div>
 
+                {/* Updated Time Input - Time Only */}
                 <div style={{ marginBottom: "15px" }}>
-                    <label style={{ display: "block", marginBottom: "5px" }}>Interval (seconds): </label>
-                    <input 
-                        type="number" 
-                        value={intervalSeconds} 
-                        onChange={(e) => setIntervalSeconds(Number(e.target.value))} 
-                        style={{ width: "100%", padding: "8px", boxSizing: "border-box" }}
-                    />
+                    <label style={{ display: "block", marginBottom: "5px" }}>Daily Start Time (Dhaka Time): </label>
+                    <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                        <input 
+                            type="time" 
+                            value={startTime} 
+                            onChange={(e) => setStartTime(e.target.value)} 
+                            style={{ padding: "8px", fontSize: "16px", minWidth: "120px" }}
+                        />
+                        <span style={{ fontSize: "14px", color: "#666" }}>
+                            ({formatTime12Hour(startTime)})
+                        </span>
+                    </div>
+                    <div style={{ display: "flex", gap: "10px", marginTop: "5px" }}>
+                        <button 
+                            onClick={() => setStartTime("09:00")}
+                            style={{
+                                padding: "5px 10px",
+                                backgroundColor: "#f0f0f0",
+                                border: "1px solid #ccc",
+                                borderRadius: "3px",
+                                cursor: "pointer",
+                                fontSize: "12px"
+                            }}
+                        >
+                            9:00 AM
+                        </button>
+                        <button 
+                            onClick={() => setStartTime("12:00")}
+                            style={{
+                                padding: "5px 10px",
+                                backgroundColor: "#f0f0f0",
+                                border: "1px solid #ccc",
+                                borderRadius: "3px",
+                                cursor: "pointer",
+                                fontSize: "12px"
+                            }}
+                        >
+                            12:00 PM
+                        </button>
+                        <button 
+                            onClick={() => setStartTime("15:00")}
+                            style={{
+                                padding: "5px 10px",
+                                backgroundColor: "#f0f0f0",
+                                border: "1px solid #ccc",
+                                borderRadius: "3px",
+                                cursor: "pointer",
+                                fontSize: "12px"
+                            }}
+                        >
+                            3:00 PM
+                        </button>
+                        <button 
+                            onClick={() => setStartTime("18:00")}
+                            style={{
+                                padding: "5px 10px",
+                                backgroundColor: "#f0f0f0",
+                                border: "1px solid #ccc",
+                                borderRadius: "3px",
+                                cursor: "pointer",
+                                fontSize: "12px"
+                            }}
+                        >
+                            6:00 PM
+                        </button>
+                    </div>
+                    <p style={{ fontSize: "12px", color: "#666", margin: "5px 0 0 0" }}>
+                        Bot will run every day at this time in Dhaka timezone (UTC+6)
+                    </p>
                 </div>
 
                 <div style={{ marginBottom: "15px" }}>
-                    <label style={{ display: "block", marginBottom: "5px" }}>Auto-stop after (seconds, optional): </label>
-                    <input 
-                        type="number" 
-                        value={stopTimeAfter} 
-                        onChange={(e) => setStopTimeAfter(e.target.value)} 
-                        placeholder="Leave empty for no auto-stop"
-                        style={{ width: "100%", padding: "8px", boxSizing: "border-box" }}
-                    />
+                    <label style={{ display: "block", marginBottom: "5px" }}>Daily Duration: </label>
+                    <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                        <input 
+                            type="number" 
+                            value={durationSeconds} 
+                            onChange={(e) => setDurationSeconds(Number(e.target.value))} 
+                            min="60"
+                            max="86400"
+                            style={{ flex: 1, padding: "8px", boxSizing: "border-box" }}
+                        />
+                        <span style={{ fontSize: "14px", color: "#666", minWidth: "100px" }}>
+                            ({formatDuration(durationSeconds)})
+                        </span>
+                    </div>
+                    <div style={{ display: "flex", gap: "10px", marginTop: "5px" }}>
+                        <button 
+                            onClick={() => setDurationSeconds(1800)}
+                            style={{
+                                padding: "5px 10px",
+                                backgroundColor: "#f0f0f0",
+                                border: "1px solid #ccc",
+                                borderRadius: "3px",
+                                cursor: "pointer",
+                                fontSize: "12px"
+                            }}
+                        >
+                            30 min
+                        </button>
+                        <button 
+                            onClick={() => setDurationSeconds(3600)}
+                            style={{
+                                padding: "5px 10px",
+                                backgroundColor: "#f0f0f0",
+                                border: "1px solid #ccc",
+                                borderRadius: "3px",
+                                cursor: "pointer",
+                                fontSize: "12px"
+                            }}
+                        >
+                            1 hour
+                        </button>
+                        <button 
+                            onClick={() => setDurationSeconds(7200)}
+                            style={{
+                                padding: "5px 10px",
+                                backgroundColor: "#f0f0f0",
+                                border: "1px solid #ccc",
+                                borderRadius: "3px",
+                                cursor: "pointer",
+                                fontSize: "12px"
+                            }}
+                        >
+                            2 hours
+                        </button>
+                        <button 
+                            onClick={() => setDurationSeconds(21600)}
+                            style={{
+                                padding: "5px 10px",
+                                backgroundColor: "#f0f0f0",
+                                border: "1px solid #ccc",
+                                borderRadius: "3px",
+                                cursor: "pointer",
+                                fontSize: "12px"
+                            }}
+                        >
+                            6 hours
+                        </button>
+                    </div>
                     <p style={{ fontSize: "12px", color: "#666", margin: "5px 0 0 0" }}>
-                        The bot will automatically stop after this many seconds (e.g., 3600 for 1 hour)
+                        How long to run each day (in seconds)
                     </p>
                 </div>
 
@@ -633,10 +833,10 @@ useEffect(() => {
                             cursor: "pointer"
                         }}
                     >
-                        Start Scheduler
+                        Start Daily Reply Bot
                     </button>
                     <button 
-                        onClick={handleStop}
+                        onClick={() => handleStop()}
                         style={{
                             padding: "10px 15px",
                             backgroundColor: "#f44336",
@@ -646,7 +846,7 @@ useEffect(() => {
                             cursor: "pointer"
                         }}
                     >
-                        Stop Scheduler
+                        Stop All Jobs
                     </button>
                     <button 
                         onClick={handleGetSheetLink}
@@ -663,6 +863,56 @@ useEffect(() => {
                     </button>
                 </div>
             </div>
+
+            {/* Active Jobs Display - Updated for daily jobs */}
+            {activeJobs.length > 0 && (
+                <div style={{ 
+                    marginTop: "20px", 
+                    padding: "10px 15px", 
+                    backgroundColor: "#e8f5e8", 
+                    borderRadius: "4px", 
+                    border: "1px solid #4CAF50" 
+                }}>
+                    <h3 style={{ margin: "0 0 10px 0" }}>Active Daily Jobs ({activeJobs.length})</h3>
+                    {activeJobs.map(job => (
+                        <div key={job.job_id} style={{ 
+                            display: "flex", 
+                            justifyContent: "space-between", 
+                            alignItems: "center",
+                            marginBottom: "8px",
+                            padding: "8px",
+                            backgroundColor: "rgba(255,255,255,0.5)",
+                            borderRadius: "3px"
+                        }}>
+                            <div style={{ flex: 1 }}>
+                                <div style={{ fontFamily: "monospace", fontSize: "14px", fontWeight: "bold" }}>
+                                    {job.job_id}
+                                </div>
+                                <div style={{ fontSize: "12px", color: "#666" }}>
+                                    Daily at {formatTime12Hour(job.start_time)} • {formatDuration(job.duration_seconds)}
+                                </div>
+                                <div style={{ fontSize: "12px", color: "#666" }}>
+                                    Next run: {new Date(job.next_run_dhaka).toLocaleString()}
+                                </div>
+                            </div>
+                            <button 
+                                onClick={() => handleStop(job.job_id)}
+                                style={{
+                                    padding: "5px 10px",
+                                    backgroundColor: "#f44336",
+                                    color: "white",
+                                    border: "none",
+                                    borderRadius: "3px",
+                                    cursor: "pointer",
+                                    fontSize: "12px"
+                                }}
+                            >
+                                Stop
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            )}
 
             {status && (
                 <div style={{ 
@@ -784,112 +1034,110 @@ useEffect(() => {
                 </div>
             )}
 
-
-
-            {/* Add this before the final closing div */}
-<div style={{ marginTop: "30px", borderTop: "1px solid #ccc", paddingTop: "20px" }}>
-    <h2>Blacklist Management</h2>
-    <p>Users on the blacklist will not receive automated replies</p>
-    
-    <div style={{ display: "flex", gap: "10px", marginBottom: "15px" }}>
-        <input
-            type="text"
-            value={blacklistUserName}
-            onChange={(e) => setBlacklistUserName(e.target.value)}
-            placeholder="User Name"
-            style={{ flex: 1, padding: "8px" }}
-        />
-        <input
-            type="text"
-            value={blacklistUserId}
-            onChange={(e) => setBlacklistUserId(e.target.value)}
-            placeholder="User ID"
-            style={{ flex: 1, padding: "8px" }}
-        />
-        <button
-            onClick={handleAddToBlacklist}
-            style={{
-                padding: "8px 15px",
-                backgroundColor: "#2196F3",
-                color: "white",
-                border: "none",
-                borderRadius: "4px",
-                cursor: "pointer"
-            }}
-        >
-            Add to Blacklist
-        </button>
-    </div>
-    
-    {blacklistStatus && (
-        <p style={{ 
-            color: blacklistStatus.includes("success") ? "green" : "red",
-            margin: "10px 0"
-        }}>
-            {blacklistStatus}
-        </p>
-    )}
-    
-    <div style={{ marginTop: "15px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-            <h3 style={{ margin: 0 }}>Blacklisted Users ({blacklistedUsers.length})</h3>
-            <button
-                onClick={handleClearBlacklist}
-                style={{
-                    padding: "5px 10px",
-                    backgroundColor: "#f44336",
-                    color: "white",
-                    border: "none",
-                    borderRadius: "4px",
-                    cursor: "pointer",
-                    fontSize: "12px"
-                }}
-            >
-                Clear All
-            </button>
-        </div>
-        
-        <div style={{ maxHeight: "200px", overflow: "auto", border: "1px solid #ddd", borderRadius: "4px" }}>
-            {blacklistedUsers.length > 0 ? (
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead style={{ position: "sticky", top: 0, backgroundColor: "#f5f5f5" }}>
-                        <tr>
-                            <th style={{ padding: "8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>User Name</th>
-                            <th style={{ padding: "8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>User ID</th>
-                            <th style={{ padding: "8px", textAlign: "right", borderBottom: "1px solid #ddd" }}>Action</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {blacklistedUsers.map((user, index) => (
-                            <tr key={index} style={{ backgroundColor: index % 2 === 0 ? "#fff" : "#f9f9f9" }}>
-                                <td style={{ padding: "8px", borderBottom: "1px solid #eee" }}>{user.user_name || "-"}</td>
-                                <td style={{ padding: "8px", borderBottom: "1px solid #eee" }}>{user.user_id || "-"}</td>
-                                <td style={{ padding: "8px", textAlign: "right", borderBottom: "1px solid #eee" }}>
-                                    <button
-                                        onClick={() => handleRemoveFromBlacklist(user.user_name, user.user_id)}
-                                        style={{
-                                            padding: "3px 8px",
-                                            backgroundColor: "#f44336",
-                                            color: "white",
-                                            border: "none",
-                                            borderRadius: "3px",
-                                            cursor: "pointer",
-                                            fontSize: "12px"
-                                        }}
-                                    >
-                                        Remove
-                                    </button>
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            ) : (
-                <p style={{ padding: "15px", textAlign: "center", color: "#666" }}>No users in blacklist</p>
-            )}
-        </div>
-    </div>
-</div>
+            {/* Blacklist Management (unchanged) */}
+            <div style={{ marginTop: "30px", borderTop: "1px solid #ccc", paddingTop: "20px" }}>
+                <h2>Blacklist Management</h2>
+                <p>Users on the blacklist will not receive automated replies</p>
+                
+                <div style={{ display: "flex", gap: "10px", marginBottom: "15px" }}>
+                    <input
+                        type="text"
+                        value={blacklistUserName}
+                        onChange={(e) => setBlacklistUserName(e.target.value)}
+                        placeholder="User Name"
+                        style={{ flex: 1, padding: "8px" }}
+                    />
+                    <input
+                        type="text"
+                        value={blacklistUserId}
+                        onChange={(e) => setBlacklistUserId(e.target.value)}
+                        placeholder="User ID"
+                        style={{ flex: 1, padding: "8px" }}
+                    />
+                    <button
+                        onClick={handleAddToBlacklist}
+                        style={{
+                            padding: "8px 15px",
+                            backgroundColor: "#2196F3",
+                            color: "white",
+                            border: "none",
+                            borderRadius: "4px",
+                            cursor: "pointer"
+                        }}
+                    >
+                        Add to Blacklist
+                    </button>
+                </div>
+                
+                {blacklistStatus && (
+                    <p style={{ 
+                        color: blacklistStatus.includes("success") ? "green" : "red",
+                        margin: "10px 0"
+                    }}>
+                        {blacklistStatus}
+                    </p>
+                )}
+                
+                <div style={{ marginTop: "15px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                        <h3 style={{ margin: 0 }}>Blacklisted Users ({blacklistedUsers.length})</h3>
+                        <button
+                            onClick={handleClearBlacklist}
+                            style={{
+                                padding: "5px 10px",
+                                backgroundColor: "#f44336",
+                                color: "white",
+                                border: "none",
+                                borderRadius: "4px",
+                                cursor: "pointer",
+                                fontSize: "12px"
+                            }}
+                        >
+                            Clear All
+                        </button>
+                    </div>
+                    
+                    <div style={{ maxHeight: "200px", overflow: "auto", border: "1px solid #ddd", borderRadius: "4px" }}>
+                        {blacklistedUsers.length > 0 ? (
+                            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                                <thead style={{ position: "sticky", top: 0, backgroundColor: "#f5f5f5" }}>
+                                    <tr>
+                                        <th style={{ padding: "8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>User Name</th>
+                                        <th style={{ padding: "8px", textAlign: "left", borderBottom: "1px solid #ddd" }}>User ID</th>
+                                        <th style={{ padding: "8px", textAlign: "right", borderBottom: "1px solid #ddd" }}>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {blacklistedUsers.map((user, index) => (
+                                        <tr key={index} style={{ backgroundColor: index % 2 === 0 ? "#fff" : "#f9f9f9" }}>
+                                            <td style={{ padding: "8px", borderBottom: "1px solid #eee" }}>{user.user_name || "-"}</td>
+                                            <td style={{ padding: "8px", borderBottom: "1px solid #eee" }}>{user.user_id || "-"}</td>
+                                            <td style={{ padding: "8px", textAlign: "right", borderBottom: "1px solid #eee" }}>
+                                                <button
+                                                    onClick={() => handleRemoveFromBlacklist(user.user_name, user.user_id)}
+                                                    style={{
+                                                        padding: "3px 8px",
+                                                        backgroundColor: "#f44336",
+                                                        color: "white",
+                                                        border: "none",
+                                                        borderRadius: "3px",
+                                                        cursor: "pointer",
+                                                        fontSize: "12px"
+                                                    }}
+                                                >
+                                                    Remove
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        ) : (
+                            <p style={{ padding: "15px", textAlign: "center", color: "#666" }}>No users in blacklist</p>
+                        )}
+                    </div>
+                </div>
+            </div>
         </div>
     );
 }
