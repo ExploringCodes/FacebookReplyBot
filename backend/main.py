@@ -304,6 +304,19 @@ async def set_additional_instructions(prompt_config: AdditionalPromptConfig):
 @app.get("/get-additional-instructions")
 async def get_additional_instructions():
     return {"additional_instructions": additional_instructions}
+@app.get("/ping")
+@app.post("/ping")
+async def ping():
+    """
+    Simple ping endpoint for cron-job.org to keep the service alive
+    """
+    return {
+        "status": "alive",
+        "timestamp": datetime.now().isoformat(),
+        "message": "Service is running"
+    }
+
+
 
 # New endpoint for heartbeat
 @app.post("/heartbeat")
